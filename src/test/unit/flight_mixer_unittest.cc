@@ -224,6 +224,14 @@ protected:
     virtual void withDefaultRxConfig(void) {
         rxConfig()->midrc = 1500;
     }
+    
+    virtual void withDefaultExistingServoConfig(servoParam_t *servoParam) {
+        servoParam->min = DEFAULT_SERVO_MIN;
+        servoParam->max = DEFAULT_SERVO_MAX;
+        servoParam->middle = DEFAULT_SERVO_MIDDLE;
+        servoParam->rate = 100;
+        servoParam->forwardFromChannel = CHANNEL_FORWARDING_DISABLED;
+    }
 
     virtual void configureMixer(uint8_t mixerMode) {
         mixerConfig()->mixerMode = mixerMode;
@@ -243,11 +251,7 @@ TEST_F(BasicMixerIntegrationTest, TestTricopterServo)
     withDefaultmotorAndServoConfiguration();
     withDefaultRxConfig();
 
-    servoConf[5].min = DEFAULT_SERVO_MIN;
-    servoConf[5].max = DEFAULT_SERVO_MAX;
-    servoConf[5].middle = DEFAULT_SERVO_MIDDLE;
-    servoConf[5].rate = 100;
-    servoConf[5].forwardFromChannel = CHANNEL_FORWARDING_DISABLED;
+    withDefaultExistingServoConfig(&servoConf[SERVO_RUDDER]);
 
     configureMixer(MIXER_TRI);
 
@@ -321,6 +325,151 @@ TEST_F(BasicMixerIntegrationTest, TestQuadMotors)
     EXPECT_EQ(TEST_MIN_COMMAND, motors[3].value);
 }
 
+class FlyingWingServoMixerIntegrationTest : public BasicMixerIntegrationTest {
+protected:
+    //  Input range [-500:+500]
+    const int16_t input = 100; 
+
+    // Test passes for current implementation,
+    // FIXME but should we not expect (input / 2) for each mix?
+    const int16_t expectedSinglePositiveMixedInputs = DEFAULT_SERVO_MIDDLE + input;
+    const int16_t expectedSingleNegativeMixedInputs = DEFAULT_SERVO_MIDDLE - input;
+    
+    const int16_t expectedTwoPositiveMixedInputs = DEFAULT_SERVO_MIDDLE + 2 * input;
+    const int16_t expectedTwoNegativeMixedInputs = DEFAULT_SERVO_MIDDLE - 2 * input;
+    
+    virtual void SetUp() {
+        BasicMixerIntegrationTest::SetUp();
+
+        rxConfig()->midrc = TEST_RC_MID;
+
+        withDefaultmotorAndServoConfiguration();
+        withDefaultRxConfig();
+
+        // Left elevon
+        withDefaultExistingServoConfig(&servoConf[SERVO_FLAPPERON_1]);
+
+        // Right elevon
+        withDefaultExistingServoConfig(&servoConf[SERVO_FLAPPERON_2]);
+        
+        // Adjust the default assumptions for the servo physical installation so
+        // that a positive input gets translated into a increased servo ouutput value
+        servoConf[SERVO_FLAPPERON_1].rate = -100;
+        servoConf[SERVO_FLAPPERON_2].rate = 100;
+        
+        configureMixer(MIXER_FLYING_WING);
+
+        mixerInit(customMotorMixer(0));
+        mixerInitServos(customServoMixer(0));
+
+        pwmIOConfiguration_t pwmIOConfiguration = {
+                .servoCount = 2,
+                .motorCount = 2,
+                .ioCount = 4,
+                .pwmInputCount = 0,
+                .ppmInputCount = 0,
+                .ioConfigurations = {}
+        };
+
+        mixerUsePWMIOConfiguration(&pwmIOConfiguration);
+    }
+};
+
+TEST_F(FlyingWingServoMixerIntegrationTest, TestPositivePitchInput)
+{
+    // given
+    axisPID[PITCH] = input;
+    
+    // when
+    mixTable();
+    writeServos();
+
+    // then
+    EXPECT_EQ(2, updatedServoCount);
+    EXPECT_EQ(expectedSinglePositiveMixedInputs, servos[0].value) << "for SERVO_FLAPPERON_1";
+    EXPECT_EQ(expectedSinglePositiveMixedInputs, servos[1].value) << "for SERVO_FLAPPERON_2";
+}
+
+TEST_F(FlyingWingServoMixerIntegrationTest, TestNegativePitchInput)
+{
+    // given
+    axisPID[PITCH] = -input;
+    
+    // when
+    mixTable();
+    writeServos();
+
+    // then
+    EXPECT_EQ(2, updatedServoCount);
+    EXPECT_EQ(expectedSingleNegativeMixedInputs, servos[0].value) << "for SERVO_FLAPPERON_1";
+    EXPECT_EQ(expectedSingleNegativeMixedInputs, servos[1].value) << "for SERVO_FLAPPERON_2";
+}
+
+TEST_F(FlyingWingServoMixerIntegrationTest, TestPositiveRollInput)
+{
+    // given
+    axisPID[ROLL] = input;
+    
+    // when
+    mixTable();
+    writeServos();
+
+    // then
+    EXPECT_EQ(2, updatedServoCount);
+    EXPECT_EQ(expectedSingleNegativeMixedInputs, servos[0].value) << "for SERVO_FLAPPERON_1";
+    EXPECT_EQ(expectedSinglePositiveMixedInputs, servos[1].value) << "for SERVO_FLAPPERON_2";
+}
+
+TEST_F(FlyingWingServoMixerIntegrationTest, TestNegativeRollInput)
+{
+    // given
+    axisPID[ROLL] = -input;
+    
+    // when
+    mixTable();
+    writeServos();
+
+    // then
+    EXPECT_EQ(2, updatedServoCount);
+    EXPECT_EQ(expectedSinglePositiveMixedInputs, servos[0].value) << "for SERVO_FLAPPERON_1";
+    EXPECT_EQ(expectedSingleNegativeMixedInputs, servos[1].value) << "for SERVO_FLAPPERON_2";
+}
+
+TEST_F(FlyingWingServoMixerIntegrationTest, TestPositivePitchAndRollInput)
+{
+    // given
+    axisPID[PITCH] = input;
+    axisPID[ROLL] = input;
+    
+    // when
+    mixTable();
+    writeServos();
+
+    // then
+    EXPECT_EQ(2, updatedServoCount);
+    EXPECT_EQ(DEFAULT_SERVO_MIDDLE, servos[0].value) << "for SERVO_FLAPPERON_1";
+    EXPECT_EQ(expectedTwoPositiveMixedInputs, servos[1].value) << "for SERVO_FLAPPERON_2";
+
+    // FIXME ...but this will only roll right, not pitch up?
+}
+
+TEST_F(FlyingWingServoMixerIntegrationTest, TestNegativePitchInputAndPositiveRollInput)
+{
+    // given
+    axisPID[PITCH] = -input;
+    axisPID[ROLL] = input;
+    
+    // when
+    mixTable();
+    writeServos();
+
+    // then
+    EXPECT_EQ(2, updatedServoCount);
+    EXPECT_EQ(expectedTwoNegativeMixedInputs, servos[0].value) << "for SERVO_FLAPPERON_1";
+    EXPECT_EQ(DEFAULT_SERVO_MIDDLE, servos[1].value) << "for SERVO_FLAPPERON_2";
+
+    // FIXME ...but this will only roll left, not pitch down?
+}
 
 class CustomMixerIntegrationTest : public BasicMixerIntegrationTest {
 protected:
@@ -331,11 +480,7 @@ protected:
 
         memset(&servoConf, 0, sizeof(servoConf));
         for (int i = 0; i < MAX_SUPPORTED_SERVOS; i++) {
-            servoConf[i].min = DEFAULT_SERVO_MIN;
-            servoConf[i].max = DEFAULT_SERVO_MAX;
-            servoConf[i].middle = DEFAULT_SERVO_MIDDLE;
-            servoConf[i].rate = 100;
-            servoConf[i].forwardFromChannel = CHANNEL_FORWARDING_DISABLED;
+            withDefaultExistingServoConfig(&servoConf[i]);
         }
 
         withDefaultmotorAndServoConfiguration();
